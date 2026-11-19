@@ -3,12 +3,15 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"strings"
 
 	"github.com/TimurBattalkhanov/go-musthave-diploma-tpl/internal/auth"
 	mw "github.com/TimurBattalkhanov/go-musthave-diploma-tpl/internal/middleware"
 	"github.com/TimurBattalkhanov/go-musthave-diploma-tpl/internal/models"
 	"github.com/TimurBattalkhanov/go-musthave-diploma-tpl/internal/repository"
+	"github.com/TimurBattalkhanov/go-musthave-diploma-tpl/internal/utils"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"go.uber.org/zap"
@@ -23,6 +26,8 @@ func NewRouter(store repository.Storage, secret []byte, log *zap.SugaredLogger) 
 	r.Post("/api/user/login", loginHandler(store, secret, log))
 	r.Group(func(r chi.Router) {
 		r.Use(mw.Auth(secret))
+		r.Post("/api/user/orders", createOrder(store, log))
+		r.Get("/api/user/orders", getOrders(store, log))
 	})
 	return r
 }
@@ -100,5 +105,71 @@ func loginHandler(store repository.Storage, secret []byte, log *zap.SugaredLogge
 			return
 		}
 		w.WriteHeader(http.StatusOK)
+	}
+}
+
+func createOrder(store repository.Storage, log *zap.SugaredLogger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			log.Debugw("Failed to read body", "error", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		number := strings.TrimSpace(string(body))
+		if number == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if !utils.ValidLuhn(number) {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			return
+		}
+
+		login, ok := mw.LoginFrom(r.Context())
+		if !ok {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		err = store.CreateOrder(r.Context(), number, login)
+		if errors.Is(err, repository.ErrOrderIsAlreadyExists) {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if errors.Is(err, repository.ErrOrderCreatedByAnotherUser) {
+			w.WriteHeader(http.StatusConflict)
+			return
+		}
+		if err != nil {
+			log.Errorw("Failed to create order", "error", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}
+}
+
+func getOrders(store repository.Storage, log *zap.SugaredLogger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		login, ok := mw.LoginFrom(r.Context())
+		if !ok {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		orders, err := store.GetOrdersByLogin(r.Context(), login)
+		if err != nil {
+			log.Errorw("Failed to get orders by login", "error", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if len(orders) == 0 {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if err = json.NewEncoder(w).Encode(orders); err != nil {
+			log.Errorw("Failed to encode response", "error", err)
+		}
 	}
 }
