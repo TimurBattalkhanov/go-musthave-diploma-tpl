@@ -112,3 +112,69 @@ func (dbs *DBStorage) GetOrdersByLogin(ctx context.Context, login string) ([]mod
 	}
 	return orders, nil
 }
+
+func (dbs *DBStorage) GetBalance(ctx context.Context, login string) (models.Balance, error) {
+	var balance models.Balance
+	rows, err := dbs.db.QueryContext(ctx, "SELECT balance, withdrawn FROM users WHERE login = $1", login)
+	if err != nil {
+		return balance, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		if err = rows.Scan(&balance.Current, &balance.Withdrawn); err != nil {
+			return balance, err
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return balance, err
+	}
+	return balance, nil
+}
+
+func (dbs *DBStorage) Withdraw(ctx context.Context, login string, w models.Withdraw) error {
+	tx, err := dbs.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.ExecContext(ctx, "UPDATE users SET balance = balance - $1, withdrawn = withdrawn + $1 WHERE login = $2 AND balance >= $1", w.Sum, login)
+	if err != nil {
+		return err
+	}
+
+	count, err := rows.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return ErrInsufficientFunds
+	}
+
+	_, err = tx.ExecContext(ctx, "INSERT INTO withdrawals(order_number, login, sum) VALUES ($1, $2, $3)", w.OrderID, login, w.Sum)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (dbs *DBStorage) GetWithdrawHistory(ctx context.Context, login string) ([]models.Withdraw, error) {
+	rows, err := dbs.db.QueryContext(ctx, "SELECT order_number, sum, processed_at FROM withdrawals WHERE login = $1 ORDER BY processed_at DESC", login)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ws []models.Withdraw
+	for rows.Next() {
+		var w models.Withdraw
+		if err = rows.Scan(&w.OrderID, &w.Sum, &w.ProcessedAt); err != nil {
+			return nil, err
+		}
+		ws = append(ws, w)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return ws, nil
+}

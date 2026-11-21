@@ -28,6 +28,9 @@ func NewRouter(store repository.Storage, secret []byte, log *zap.SugaredLogger) 
 		r.Use(mw.Auth(secret))
 		r.Post("/api/user/orders", createOrder(store, log))
 		r.Get("/api/user/orders", getOrders(store, log))
+		r.Get("/api/user/balance", getBalance(store, log))
+		r.Post("/api/user/balance/withdraw", withdraw(store, log))
+		r.Get("/api/user/withdrawals", getWithdrawals(store, log))
 	})
 	return r
 }
@@ -169,6 +172,95 @@ func getOrders(store repository.Storage, log *zap.SugaredLogger) http.HandlerFun
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if err = json.NewEncoder(w).Encode(orders); err != nil {
+			log.Errorw("Failed to encode response", "error", err)
+		}
+	}
+}
+
+func getBalance(store repository.Storage, log *zap.SugaredLogger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		login, ok := mw.LoginFrom(r.Context())
+		if !ok {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+
+		balance, err := store.GetBalance(r.Context(), login)
+		if err != nil {
+			log.Errorw("Failed to get balance", "error", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if err = json.NewEncoder(w).Encode(balance); err != nil {
+			log.Errorw("Failed to encode response", "error", err)
+		}
+	}
+}
+
+func withdraw(store repository.Storage, log *zap.SugaredLogger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		login, ok := mw.LoginFrom(r.Context())
+		if !ok {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+
+		var req models.Withdraw
+		dec := json.NewDecoder(r.Body)
+		if err := dec.Decode(&req); err != nil {
+			log.Debugw("Failed to decode request", "error", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		if !utils.ValidLuhn(req.OrderID) {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			return
+		}
+
+		if req.Sum <= 0 {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		err := store.Withdraw(r.Context(), login, req)
+		if errors.Is(err, repository.ErrInsufficientFunds) {
+			w.WriteHeader(http.StatusPaymentRequired)
+			return
+		}
+		if err != nil {
+			log.Errorw("Failed to withdraw", "error", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}
+}
+
+func getWithdrawals(store repository.Storage, log *zap.SugaredLogger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		login, ok := mw.LoginFrom(r.Context())
+		if !ok {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		rows, err := store.GetWithdrawHistory(r.Context(), login)
+		if err != nil {
+			log.Errorw("Failed to get withdrawals", "error", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		if len(rows) == 0 {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if err = json.NewEncoder(w).Encode(rows); err != nil {
 			log.Errorw("Failed to encode response", "error", err)
 		}
 	}
