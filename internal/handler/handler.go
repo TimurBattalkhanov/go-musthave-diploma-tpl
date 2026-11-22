@@ -20,8 +20,9 @@ import (
 
 func NewRouter(store repository.Storage, secret []byte, log *zap.SugaredLogger) http.Handler {
 	r := chi.NewRouter()
-	r.Use(middleware.StripSlashes)
 	r.Use(mw.HTTPLogging(log))
+	r.Use(mw.GzipMiddleware)
+	r.Use(middleware.StripSlashes)
 	r.Post("/api/user/register", registerHandler(store, secret, log))
 	r.Post("/api/user/login", loginHandler(store, secret, log))
 	r.Group(func(r chi.Router) {

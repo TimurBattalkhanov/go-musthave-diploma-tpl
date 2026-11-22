@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"github.com/TimurBattalkhanov/go-musthave-diploma-tpl/internal/config"
+	"github.com/TimurBattalkhanov/go-musthave-diploma-tpl/internal/integration"
 	"github.com/TimurBattalkhanov/go-musthave-diploma-tpl/internal/logger"
 	"github.com/TimurBattalkhanov/go-musthave-diploma-tpl/internal/repository"
 )
@@ -45,11 +47,28 @@ func run() error {
 	}()
 	log.Infow("starting server", "address", cfg.Address)
 
+	worker := integration.NewWorker(integration.NewClient(), cfg.AccrualAddress)
+	jobs := make(chan []string)
+
+	var wg sync.WaitGroup
+
+	wg.Go(func() {
+		worker.RunCollector(ctx, store, log, jobs)
+	})
+
+	wg.Go(func() {
+		worker.RunWorker(ctx, store, log, jobs)
+	})
+	defer func() {
+		stop()
+		wg.Wait()
+	}()
+
 	select {
 	case <-ctx.Done():
 		log.Infow("shutting down server")
 		return shutdown(srv)
-	case err := <-errCh:
+	case err = <-errCh:
 		return fmt.Errorf("server error: %w", err)
 	}
 }

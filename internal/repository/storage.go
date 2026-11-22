@@ -21,4 +21,6 @@ type Storage interface {
 	GetBalance(ctx context.Context, login string) (models.Balance, error)
 	Withdraw(ctx context.Context, login string, amount models.Withdraw) error
 	GetWithdrawHistory(ctx context.Context, login string) ([]models.Withdraw, error)
+	UpdateOrderStatus(ctx context.Context, number string, status string, accrual float64) error
+	GetProcessingNumbers(ctx context.Context) ([]string, error)
 }

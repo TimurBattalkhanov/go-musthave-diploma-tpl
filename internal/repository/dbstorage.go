@@ -178,3 +178,50 @@ func (dbs *DBStorage) GetWithdrawHistory(ctx context.Context, login string) ([]m
 	}
 	return ws, nil
 }
+
+func (dbs *DBStorage) UpdateOrderStatus(ctx context.Context, number string, status string, accrual float64) error {
+	tx, err := dbs.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var login string
+	err = tx.QueryRowContext(ctx,
+		"UPDATE orders SET status = $1, accrual = $2 WHERE number = $3 AND status NOT IN ('PROCESSED', 'INVALID') RETURNING login",
+		status, accrual, number).Scan(&login)
+
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.ExecContext(ctx, "UPDATE users SET balance = balance + $1 WHERE login = $2", accrual, login)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (dbs *DBStorage) GetProcessingNumbers(ctx context.Context) ([]string, error) {
+	rows, err := dbs.db.QueryContext(ctx, "SELECT number FROM orders WHERE status IN ('NEW', 'PROCESSING')")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var orders []string
+	for rows.Next() {
+		var number string
+		if err = rows.Scan(&number); err != nil {
+			return nil, err
+		}
+		orders = append(orders, number)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return orders, nil
+}
